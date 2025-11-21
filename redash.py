@@ -1,112 +1,294 @@
-import time
 import requests
 from dotenv import dotenv_values
-import os
-import json
+import sqlite3
+from tqdm import tqdm
 
 
 secrets: dict = dotenv_values(".env")
  
-REDASH_API_KEY = secrets["redash_api_key"]
-REDASH_BASE_URL = secrets["redash_base_url"]
+REDASH_API_KEY: str = secrets.get("redash_api_key", "")
+REDASH_BASE_URL: str = secrets.get("redash_base_url", "")
+MY_GROUP_ID: int = secrets.get("my_redash_group_id", 0)
 
-def send_request(url_suffix, payload=None, get=True):
-    headers = {
+
+def send_request(
+    url_suffix: str, 
+    payload: dict | None = None, 
+    get: bool=True
+) -> dict | list | None:
+    headers: dict = {
         'Authorization': f'Key {REDASH_API_KEY}',
         'Content-Type': 'application/json',
     }
 
-    full_url = f"{REDASH_BASE_URL}/api/{url_suffix}"
-    if get:
-        response = requests.get(
+    full_url: str = f"{REDASH_BASE_URL}/api/{url_suffix}"
+    try:
+        if get:
+            response: requests.Response = requests.get(
+                full_url,
+                headers=headers
+            )
+        else:
+            response: requests.Response = requests.post(
+                full_url,
+                headers=headers,
+                json=payload
+            )
+    except requests.RequestException as e:
+        print(f"Request failed: {e}")
+        return None
+
+    if response.status_code == 200:
+        res: dict | list = response.json()
+        if isinstance(res, dict) and res.get("message", "") != "":
+            print("message:", res.get("message"))
+            return None
+        else:
+            return res
+
+    return None
+
+
+def get_status() -> dict | None:
+    headers: dict = {
+        'Authorization': f'Key {REDASH_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    full_url: str = f"{REDASH_BASE_URL}/status.json"
+    try:
+        response: requests.Response = requests.get(
             full_url,
             headers=headers
         )
+    except requests.RequestException as e:
+        print(f"Request failed: {e}")
+        return None
+
+    if response.status_code == 200:
+        res: dict = response.json()
+        if isinstance(res, dict) and res.get("message") is not None:
+            print("message:", res.get("message"))
+            return None
+        else:
+            return res
     else:
-        response = requests.post(
-            full_url,
-            headers=headers,
-            json=payload
-        )
-
-    res = response.json()
-    return res
+        print("response status code:", response.status_code)
+    return None
 
 
-def get_query_acl(query_id):
-    url_suffix = f"queries/{query_id}/acl"
+def get_query_acl(query_id: int) -> dict | list | None:
+    url_suffix: str = f"queries/{query_id}/acl"
     data = send_request(url_suffix=url_suffix)
     return data
 
 
-def set_query_acl(query_id, user_id):
-    acl_payload = {
+def set_query_acl(
+    query_id: int, 
+    user_id: int, 
+    owner_id: int | None = None
+) -> None:
+    acl_payload: dict = {
         "access_type": "modify",
         "user_id": user_id
     }
-    url_suffix = f"queries/{query_id}/acl"
+    url_suffix: str = f"queries/{query_id}/acl"
     data = send_request(url_suffix=url_suffix, payload=acl_payload, get=False)
-    # if not error in response then add info in local file with format: query_id, user_ids
-    # append to file query_acl_updates_log.json: format {query_id: [user_id1, user_id2, ...]}
-    log_path = os.path.join(os.path.dirname(__file__), "query_acl_updates_log.json")
+    if data is None:
+        print(f"Failed to set ACL for query_id {query_id} and user_id {user_id}")
+        return None
+    try:
+        conn: sqlite3.Connection = sqlite3.connect('queries.db')
+        cursor: sqlite3.Cursor = conn.cursor()
 
-    # Only write to log if response contains no error fields
-    if not (isinstance(data, dict) and (data.get("error") or data.get("errors"))):
+        if owner_id is None:
+            cursor.execute(
+                "SELECT owner_id FROM queries WHERE query_id = ? LIMIT 1",
+                (query_id,)
+            )
+            row = cursor.fetchone()
+            if row is not None and row[0] is not None:
+                try:
+                    owner_id = int(row[0])
+                except (TypeError, ValueError):
+                    owner_id = None
+
+        if owner_id is None:
+            print(f"owner_id not provided and not found for query_id {query_id}; skipping DB insert")
+        else:
+            cursor.execute('''
+                INSERT OR IGNORE INTO queries (query_id, owner_id, editor_id)
+                VALUES (?, ?, ?)
+            ''', (query_id, owner_id, user_id))
+            conn.commit()
+    except sqlite3.Error as e:
+        print(f"DB error: {e}")
+    finally:
         try:
-            if os.path.exists(log_path):
-                with open(log_path, "r", encoding="utf-8") as f:
-                    log = json.load(f)
+            conn.close()
+        except Exception:
+            pass
+
+    return None
+
+
+def get_queries(page: int=1, page_size: int=25) -> dict | list | None:
+    url_suffix: str = f"queries?page_size={page_size}&page={page}"
+    data = send_request(url_suffix=url_suffix)
+    return data
+
+
+def get_users_in_group(group_id: int) -> list | None:
+    url_suffix: str = f"groups/{group_id}/members"
+    data = send_request(url_suffix=url_suffix)
+    if data is not None and not isinstance(data, list):
+        print("bad response format: ", type(data), "; expected list")
+        return None
+    return data
+
+
+def get_user_info(user_id: int) -> dict | list | None:
+    url_suffix: str = f"users/{user_id}"
+    data = send_request(url_suffix=url_suffix)
+    return data
+
+
+def download_queries_info() -> None:
+    conn: sqlite3.Connection = sqlite3.connect('queries.db')
+    cursor: sqlite3.Cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS queries (
+            query_id INTEGER,
+            owner_id INTEGER,
+            editor_id INTEGER,
+            PRIMARY KEY (query_id, owner_id)  -- non-unique primary key
+        )
+    ''')
+
+    conn.commit()
+
+    status: dict | None = get_status()
+    if status is None or not isinstance(status, dict):
+        return None
+    page_size: int = 25
+    pages: int = int(status.get("queries_count", 1)) // page_size + 1
+    
+    for page in tqdm(range(pages)):
+        queries_info = get_queries(page=page + 1, page_size=25)
+        if queries_info is None or not isinstance(queries_info, dict):
+            break
+        queries = queries_info.get("results")
+        if not isinstance(queries, list):
+            break
+
+        has_new_query: int = 0
+        for query in queries:
+            if (not isinstance(query, dict) or query.get("user") is None 
+                or not isinstance(query.get("user"), dict)):
+                continue
+            pass
+            query_id: int = int(query.get("id", 0))
+            user: dict = query.get("user", {})
+            owner_id: int = int(user.get("id", 0))
+            editor_id: int = owner_id
+            
+            cursor.execute(
+                "SELECT editor_id FROM queries WHERE query_id = ? AND owner_id = ?",
+                (query_id, owner_id)
+            )
+            existing = cursor.fetchone()
+            if existing is None:
+                has_new_query = 1
             else:
-                log = {}
-        except (json.JSONDecodeError, IOError):
-            log = {}
+                cursor.execute('''
+                    INSERT OR IGNORE INTO queries (query_id, owner_id, editor_id)
+                    VALUES (?, ?, ?)
+                ''', (query_id, owner_id, editor_id))
+                conn.commit()
+        if has_new_query == 0:
+            print("no new rows found. exiting...")
+            break
 
-        key = str(query_id)
-        users = log.get(key, [])
-        if user_id not in users:
-            users.append(user_id)
-            log[key] = users
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(log, f, indent=2)
-    return data
-
-
-def get_users_in_group(group_id):
-    url_suffix = f"groups/{group_id}/members"
-    data = send_request(url_suffix=url_suffix)
-    return data
+    conn.close()
+    return None
 
 
-def get_user_info(user_id):
-    url_suffix = f"users/{user_id}"
-    data = send_request(url_suffix=url_suffix)
-    return data
+def get_user_queries(user_id: int) -> list[int]:
+    conn: sqlite3.Connection = sqlite3.connect('queries.db')
+    cursor: sqlite3.Cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT query_id FROM queries WHERE owner_id = ?",
+            (user_id,)
+        )
+        rows: list = cursor.fetchall()
+    except sqlite3.Error as e:
+        print(f"DB error: {e}")
+        conn.close()
+        return []
 
+    conn.close()
+
+    query_ids: list[int] = []
+    for row in rows:
+        try:
+            query_ids.append(int(row[0]))
+        except (TypeError, ValueError):
+            continue
+
+    seen: set[int] = set()
+    result: list[int] = []
+    for q in query_ids:
+        if q not in seen:
+            seen.add(q)
+            result.append(q)
+
+    return result
+
+
+def has_access(query_id: int, user_id: int) -> int:
+    conn: sqlite3.Connection = sqlite3.connect('queries.db')
+    cursor: sqlite3.Cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM queries WHERE query_id = ? AND editor_id = ? LIMIT 1",
+            (query_id, user_id)
+        )
+        row = cursor.fetchone()
+    except sqlite3.Error as e:
+        print(f"DB error: {e}")
+        conn.close()
+        return 0
+    conn.close()
+    return 1 if row is not None else 0
+
+
+def update_accesses_in_group(group_id: int) -> None:
+    group_members = get_users_in_group(group_id)
+    if group_members is None or not isinstance(group_members, list):
+        print("No group members found or invalid data")
+        return None
+
+    users: list[int] = []
+    for member in group_members:
+        if not isinstance(member, dict) or member.get("id", 0) == 0:
+            continue
+        users.append(member.get("id", 0))
+
+    for user in tqdm(users):
+        member_queries: list[int] = get_user_queries(user)
+        for editor in tqdm(users, leave=False):
+            if editor == user:
+                continue
+            for query in tqdm(member_queries, leave=False):
+                if has_access(query, editor) == 0:
+                    set_query_acl(query, editor, user)
+
+    return None
 
 
 
 if __name__ == "__main__":
-    # check that connection is working correctly
-    # insert here any valid query id preferably one that multiple people have access to
-    # data = get_query_acl(21956)
-    # print("QUERY ACL:")
-    # print(data)
-    
-    # data = get_user_info(user_id=23)
-    # print("USER INFO:")
-    # print(data["id"])
+    download_queries_info()
+    update_accesses_in_group(MY_GROUP_ID)
 
-    # data = get_users_in_group(group_id=6)
-    # print("USERS IN GROUP:")
-    # print(data)
-    
-    
-    data = get_query_acl(21955)
-    print("QUERY ACL:")
-    print(data)
-    data=set_query_acl(query_id=21955, user_id=375)
-    print("SET QUERY ACL RESPONSE:")
-    print(data)
-    data = get_query_acl(21955)
-    print("QUERY ACL:")
-    print(data)
