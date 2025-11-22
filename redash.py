@@ -237,7 +237,7 @@ def download_queries_info() -> None:
             query_id INTEGER,
             owner_id INTEGER,
             editor_id INTEGER,
-            PRIMARY KEY (query_id, owner_id)  -- non-unique primary key
+            PRIMARY KEY (query_id, owner_id, editor_id)  -- non-unique primary key
         )
     ''')
 
@@ -275,7 +275,7 @@ def download_queries_info() -> None:
             existing = cursor.fetchone()
             if existing is None:
                 has_new_query = 1
-            else:
+                # print(query_id, owner_id, editor_id)
                 cursor.execute('''
                     INSERT OR IGNORE INTO queries (query_id, owner_id, editor_id)
                     VALUES (?, ?, ?)
@@ -328,6 +328,48 @@ def get_user_queries(user_id: int) -> list[int]:
             result.append(q)
 
     return result
+
+
+def get_user_queries_with_editors(user_id: int) -> dict[int, list[int]]:
+    """find all queries in queries.db that belong to exact user
+    along with all editors who have access to each query
+
+    Args:
+        user_id (int): user ID
+
+    Returns:
+        dict[int, list[int]]: dictionary where keys are query IDs
+        and values are lists of editor IDs who have access to the query
+    """
+    conn: sqlite3.Connection = sqlite3.connect('queries.db')
+    cursor: sqlite3.Cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT query_id, GROUP_CONCAT(editor_id) FROM queries WHERE owner_id = ? GROUP BY query_id",
+            (user_id,)
+        )
+        rows: list = cursor.fetchall()
+    except sqlite3.Error as e:
+        print(f"DB error: {e}")
+        conn.close()
+        return {}
+
+    conn.close()
+
+    query_editors: dict[int, list[int]] = {}
+    print(rows)
+    for row in rows:
+        try:
+            query_id: int = int(row[0])
+            editor_id: int = int(row[1])
+        except (TypeError, ValueError):
+            continue
+
+        if query_id not in query_editors:
+            query_editors[query_id] = []
+        query_editors[query_id].append(editor_id)
+
+    return query_editors
 
 
 def has_access(query_id: int, user_id: int) -> int:
@@ -395,4 +437,5 @@ if __name__ == "__main__":
     # downloads all existing queries to local sqlite db "queries"
     download_queries_info()
     # updates accesses in queries for all users in the group to each other
-    update_accesses_in_group(MY_GROUP_ID)
+    # update_accesses_in_group(MY_GROUP_ID)
+    # print(get_user_queries_with_editors(375))
