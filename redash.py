@@ -16,6 +16,19 @@ def send_request(
     payload: dict | None = None, 
     get: bool=True
 ) -> dict | list | None:
+    """send get or post request to redash api
+
+    Args:
+        url_suffix (str): api suffix: part of the url after /api/
+        payload (dict | None, optional): payload for POST request. Defaults to None.
+        get (bool, optional): whether to send a GET request. Defaults to True.
+
+    Returns:
+        dict | list | None: response from the API or None
+        most of the requests will return dict. if there was an error that is recognised by redash,
+        the response will contain "message" field with error description. In that case, None is returned.
+        a few requsests will return list, e.g. getting users in group.
+    """
     headers: dict = {
         'Authorization': f'Key {REDASH_API_KEY}',
         'Content-Type': 'application/json',
@@ -50,6 +63,11 @@ def send_request(
 
 
 def get_status() -> dict | None:
+    """non api endpoint to get redash status info
+
+    Returns:
+        dict | None: basic info about memory usage, queries / dashboards count, etc.
+    """
     headers: dict = {
         'Authorization': f'Key {REDASH_API_KEY}',
         'Content-Type': 'application/json',
@@ -76,9 +94,20 @@ def get_status() -> dict | None:
     return None
 
 
-def get_query_acl(query_id: int) -> dict | list | None:
+def get_query_acl(query_id: int) -> dict | None:
+    """get access control list for a query
+    Args:
+        query_id (int): query ID
+
+    Returns:
+        dict | list | None: users with access to modify the query 
+        or None if request failed
+    """
     url_suffix: str = f"queries/{query_id}/acl"
     data = send_request(url_suffix=url_suffix)
+    if data is not None and not isinstance(data, dict):
+        print("bad response format: ", type(data), "; expected dict")
+        return None
     return data
 
 
@@ -87,6 +116,15 @@ def set_query_acl(
     user_id: int, 
     owner_id: int | None = None
 ) -> None:
+    """set access to modfy query by user
+
+    Args:
+        query_id (int): query ID
+        user_id (int): user ID who will get access
+        owner_id (int | None, optional): owner of query ID. Defaults to None.
+    Returns:
+        None
+    """
     acl_payload: dict = {
         "access_type": "modify",
         "user_id": user_id
@@ -131,13 +169,35 @@ def set_query_acl(
     return None
 
 
-def get_queries(page: int=1, page_size: int=25) -> dict | list | None:
+def get_queries(page: int=1, page_size: int=25) -> dict | None:
+    """get redash queries
+
+    Args:
+        page (int, optional): number of page to load.
+        newest queries are on first page.
+        Defaults to 1.
+        page_size (int, optional): number of queries per page. Defaults to 25.
+
+    Returns:
+        dict | None: dictionary with full info of queries or None if request failed
+    """
     url_suffix: str = f"queries?page_size={page_size}&page={page}"
     data = send_request(url_suffix=url_suffix)
+    if data is not None and not isinstance(data, dict):
+        print("bad response format: ", type(data), "; expected dict")
+        return None
     return data
 
 
 def get_users_in_group(group_id: int) -> list | None:
+    """get members of the group
+
+    Args:
+        group_id (int): group ID
+
+    Returns:
+        list | None: list of users in the group or None if request failed
+    """
     url_suffix: str = f"groups/{group_id}/members"
     data = send_request(url_suffix=url_suffix)
     if data is not None and not isinstance(data, list):
@@ -146,13 +206,28 @@ def get_users_in_group(group_id: int) -> list | None:
     return data
 
 
-def get_user_info(user_id: int) -> dict | list | None:
+def get_user_info(user_id: int) -> dict | None:
+    """get info about user
+
+    Args:
+        user_id (int): user ID
+
+    Returns:
+        dict | None: dict with user info or None if request failed
+    """
     url_suffix: str = f"users/{user_id}"
     data = send_request(url_suffix=url_suffix)
+    if data is not None and not isinstance(data, dict):
+        print("bad response format: ", type(data), "; expected dict")
+        return None
     return data
 
 
 def download_queries_info() -> None:
+    """dowload all existing queries to local sqlite db "queries"
+    Returns:
+        None
+    """
     conn: sqlite3.Connection = sqlite3.connect('queries.db')
     cursor: sqlite3.Cursor = conn.cursor()
 
@@ -214,6 +289,14 @@ def download_queries_info() -> None:
 
 
 def get_user_queries(user_id: int) -> list[int]:
+    """find all queries in queries.db that belong to exact user
+
+    Args:
+        user_id (int): user ID
+
+    Returns:
+        list[int]: list of queries IDs belonging to the user
+    """
     conn: sqlite3.Connection = sqlite3.connect('queries.db')
     cursor: sqlite3.Cursor = conn.cursor()
     try:
@@ -247,6 +330,14 @@ def get_user_queries(user_id: int) -> list[int]:
 
 
 def has_access(query_id: int, user_id: int) -> int:
+    """check if there is a record in queries.db that user has access to a query
+
+    Args:
+        query_id (int): query ID
+        user_id (int): user ID
+    Returns:
+        int: 1 if user has access, 0 otherwise
+    """
     conn: sqlite3.Connection = sqlite3.connect('queries.db')
     cursor: sqlite3.Cursor = conn.cursor()
     try:
@@ -264,6 +355,14 @@ def has_access(query_id: int, user_id: int) -> int:
 
 
 def update_accesses_in_group(group_id: int) -> None:
+    """update rights to all queries for all users in the group to each other
+
+    Args:
+        group_id (int): group ID
+
+    Returns:
+        None
+    """
     group_members = get_users_in_group(group_id)
     if group_members is None or not isinstance(group_members, list):
         print("No group members found or invalid data")
@@ -291,4 +390,3 @@ def update_accesses_in_group(group_id: int) -> None:
 if __name__ == "__main__":
     download_queries_info()
     update_accesses_in_group(MY_GROUP_ID)
-
