@@ -4,11 +4,12 @@ import sqlite3
 from tqdm import tqdm
 
 
-secrets: dict = dotenv_values(".env")
+
+SECRETS: dict = dotenv_values(".env")
  
-REDASH_API_KEY: str = secrets.get("redash_api_key", "")
-REDASH_BASE_URL: str = secrets.get("redash_base_url", "")
-MY_GROUP_ID: int = secrets.get("my_redash_group_id", 0)
+REDASH_API_KEY: str = SECRETS.get("redash_api_key", "")
+REDASH_BASE_URL: str = SECRETS.get("redash_base_url", "")
+MY_GROUP_ID: int = SECRETS.get("my_redash_group_id", 0)
 
 
 def send_request(
@@ -356,7 +357,10 @@ def has_access(query_id: int, user_id: int) -> int:
 
 def update_accesses_in_group(group_id: int) -> None:
     """update rights to all queries for all users in the group to each other
-
+    for example: if user A and user B are in the same group,
+    and user A is the owner of query Q, then user B will get access to it
+    along with all the other queries owned by user A
+    and same for all users in the group
     Args:
         group_id (int): group ID
 
@@ -388,5 +392,7 @@ def update_accesses_in_group(group_id: int) -> None:
 
 
 if __name__ == "__main__":
+    # downloads all existing queries to local sqlite db "queries"
     download_queries_info()
+    # updates accesses in queries for all users in the group to each other
     update_accesses_in_group(MY_GROUP_ID)
