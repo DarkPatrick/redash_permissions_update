@@ -438,4 +438,3 @@ if __name__ == "__main__":
     download_queries_info()
     # updates accesses in queries for all users in the group to each other
     update_accesses_in_group(MY_GROUP_ID)
-    # print(get_user_queries_with_editors(375))
